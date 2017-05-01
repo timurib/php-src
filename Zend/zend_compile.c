@@ -1248,6 +1248,7 @@ void zend_do_early_binding(void) /* {{{ */
 		case ZEND_ADD_INTERFACE:
 		case ZEND_ADD_TRAIT:
 		case ZEND_BIND_TRAITS:
+		case ZEND_DO_UCALL:
 			/* We currently don't early-bind classes that implement interfaces */
 			/* Classes with traits are handled exactly the same, no early-bind here */
 			return;
@@ -5588,6 +5589,12 @@ void zend_begin_method_decl(zend_op_array *op_array, zend_string *name, zend_boo
 					"public visibility and cannot be static");
 			}
 			ce->__debugInfo = (zend_function *) op_array;
+		} else if (zend_string_equals_literal(lcname, ZEND_CTOR_STATIC_FUNC_NAME)) {
+			if (!is_public || !is_static) {
+				zend_error(E_WARNING, "The magic method __callStatic() must have "
+					"public visibility and be static");
+			}
+			ce->__constructstatic = (zend_function *) op_array;
 		} else if (!is_static) {
 			op_array->fn_flags |= ZEND_ACC_ALLOW_STATIC;
 		}
@@ -5995,6 +6002,41 @@ static zend_string *zend_generate_anon_class_name(unsigned char *lex_pos) /* {{{
 }
 /* }}} */
 
+static void zend_compile_static_ctor_call(zend_class_entry *ce)
+{
+	znode result;
+	zend_op *opline;
+	uint32_t opnum_init;
+	uint32_t arg_count = 0;
+	uint32_t call_flags;
+
+	zend_function *static_ctor = ce->__constructstatic;
+	zend_string *func_name = static_ctor->common.function_name;
+
+	opnum_init = get_next_op_number(CG(active_op_array)) - 1;
+	opline = get_next_op(CG(active_op_array));
+	opline->opcode = ZEND_INIT_STATIC_METHOD_CALL;
+
+	opline->op1_type = IS_CONST;
+	opline->op2_type = IS_CONST;
+	opline->op1.constant = zend_add_class_name_literal(CG(active_op_array), ce->name);
+	opline->op2.constant = zend_add_func_name_literal(CG(active_op_array), func_name);
+
+	zend_alloc_cache_slot(opline->op2.constant);
+	zend_check_live_ranges(opline);
+	zend_do_extended_fcall_begin();
+	
+	opline = &CG(active_op_array)->opcodes[opnum_init];
+	opline->extended_value = arg_count;
+
+	call_flags = 0;
+	opline = zend_emit_op(&result, zend_get_call_op(opline, static_ctor), NULL, NULL);
+	opline->op1.num = call_flags;
+
+	zend_do_extended_fcall_end();
+	zend_do_free(&result);
+}
+
 void zend_compile_class_decl(zend_ast *ast) /* {{{ */
 {
 	zend_ast_decl *decl = (zend_ast_decl *) ast;
@@ -6188,6 +6230,10 @@ void zend_compile_class_decl(zend_ast *ast) /* {{{ */
 		ce->interfaces = NULL;
 		ce->num_interfaces = 0;
 		ce->ce_flags |= ZEND_ACC_IMPLEMENT_INTERFACES;
+	}
+
+	if (ce->__constructstatic) {
+		zend_compile_static_ctor_call(ce);
 	}
 
 	FC(implementing_class) = original_implementing_class;
