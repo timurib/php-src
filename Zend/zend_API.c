@@ -2053,6 +2053,13 @@ ZEND_API void zend_check_magic_method_implementation(const zend_class_entry *ce,
 	char lcname[16];
 	size_t name_len;
 
+	/* "__constructStatic" is longer than 16 bytes, but we can avoid names comparison for this case:
+	 * internal class has not a static constructor, but user-land class entry already register it,
+	 * so it's enough to just compare the pointers */
+	if (UNEXPECTED(ce->__constructstatic == fptr && fptr->common.num_args != 0)) {
+		zend_error(error_type, "Static constructor %s::%s() cannot take arguments", ZSTR_VAL(ce->name), ZEND_CTOR_STATIC_FUNC_NAME);
+	}
+
 	/* we don't care if the function name is longer, in fact lowercasing only
 	 * the beginning of the name speeds up the check process */
 	name_len = ZSTR_LEN(fptr->common.function_name);
@@ -2366,6 +2373,7 @@ ZEND_API int zend_register_functions(zend_class_entry *scope, const zend_functio
 		scope->__unset = __unset;
 		scope->__isset = __isset;
 		scope->__debugInfo = __debugInfo;
+		scope->__constructstatic = NULL; /* internal classes never have static ctor */
 		if (ctor) {
 			ctor->common.fn_flags |= ZEND_ACC_CTOR;
 			if (ctor->common.fn_flags & ZEND_ACC_STATIC) {
